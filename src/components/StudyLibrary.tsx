@@ -464,7 +464,7 @@ export default function StudyLibrary({
                 </div>
               ) : (
                 filteredMaterials.map((mat) => (
-                  <button
+                  <div
                     key={mat.id}
                     id={`btn-mat-${mat.id}`}
                     onClick={() => handleSelectMaterial(mat)}
@@ -510,7 +510,7 @@ export default function StudyLibrary({
                         </span>
                       ))}
                     </div>
-                  </button>
+                  </div>
                 ))
               )}
             </div>
