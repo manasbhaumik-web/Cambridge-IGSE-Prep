@@ -1,0 +1,6 @@
+{
+  "name": "Cambridge IGCSE Prep",
+  "description": "A comprehensive IGCSE study library and interactive diagnostic assessment platform aligned with Cambridge board exam expectations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

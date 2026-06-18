@@ -1,0 +1,119 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* --- Cambridge Academic Color Scheme Remapping --- */
+  /* Cambridge Classic Blue & Dark Teal variants (authentic, beautiful, and highly accessible) */
+  --color-blue-50: #f2faf9;
+  --color-blue-105: #f2faf9;
+  --color-blue-100: #e0f2f0;
+  --color-blue-200: #a3c1ad; /* Official classic light "Cambridge Blue" */
+  --color-blue-300: #8bb39c; /* Mid classic sage-tone */
+  --color-blue-400: #548f76;
+  --color-blue-500: #1b6d5c;
+  --color-blue-600: #0a4d40; /* High-contrast scholarly forest-teal for primary actions */
+  --color-blue-700: #073b31;
+  --color-blue-800: #052c24;
+  --color-blue-900: #031c17;
+  --color-blue-950: #010d0a;
+
+  /* Cambridge Midnight Imperial Navy (scholarly corporate branding base) */
+  --color-indigo-50: #f4f6fa;
+  --color-indigo-100: #e8ecf4;
+  --color-indigo-200: #c2cfdf;
+  --color-indigo-300: #9cb1cb;
+  --color-indigo-400: #7592b7;
+  --color-indigo-500: #4e73a3;
+  --color-indigo-600: #1d3c63; /* Classical navy blue highlight */
+  --color-indigo-700: #122c4d;
+  --color-indigo-800: #0d2240; /* Cambridge University brand primary dark navy */
+  --color-indigo-900: #08162b;
+  --color-indigo-950: #040c17;
+
+  /* Honors Bronze & Gold (scholastic achievement & badges) */
+  --color-amber-50: #fdfaf2;
+  --color-amber-100: #fbf0d4;
+  --color-amber-200: #f6e09f;
+  --color-amber-300: #f1cf6c;
+  --color-amber-400: #ecbd3a;
+  --color-amber-500: #bf9827; /* Rich academic bronze-gold */
+  --color-amber-600: #9b7a1e;
+  --color-amber-700: #775c15;
+  --color-amber-800: #54400c;
+  --color-amber-900: #3a2c07;
+
+  /* Classic King's College Stone (warm sandstone slate grays for cozy library reading) */
+  --color-slate-50: #fbfbf9;
+  --color-slate-100: #f6f6f1;
+  --color-slate-150: #ededdf;
+  --color-slate-200: #e5e5da;
+  --color-slate-250: #dadacb;
+  --color-slate-300: #cfcfbd;
+  --color-slate-400: #b1b19a;
+  --color-slate-550: #888871;
+  --color-slate-500: #7c7c68;
+  --color-slate-600: #626250;
+  --color-slate-700: #4b4b3c;
+  --color-slate-800: #333328;
+  --color-slate-900: #1c1c15;
+  --color-slate-950: #0d0d09;
+}
+
+/* Custom animations for fade effects and layout entries */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Confetti falling keyframes and utilities */
+@keyframes confettiFall {
+  0% {
+    transform: translateY(0) rotate(0deg) translateX(0);
+    opacity: 1;
+  }
+  50% {
+    transform: translateY(45vh) rotate(180deg) translateX(40px);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translateY(90vh) rotate(360deg) translateX(-40px);
+    opacity: 0;
+  }
+}
+
+.animate-confetti {
+  animation: confettiFall 3.5s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+
+/* Glassmorphic collegiate card highlights & custom manuscript elements */
+.gothic-card {
+  background: rgba(250, 246, 238, 0.9);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(205, 179, 101, 0.25);
+  box-shadow: 0 4px 20px -5px rgba(74, 56, 17, 0.08);
+}
+
+.glow-amber {
+  box-shadow: 0 0 15px 1px rgba(222, 189, 95, 0.18);
+}
+
+.double-border {
+  border: 3px double rgba(167, 128, 50, 0.3);
+}
+
+/* Enhance reading clarity of the notes and worksheets */
+.prose {
+  font-family: "Inter", sans-serif;
+  font-size: 1.155rem;
+  line-height: 1.625;
+}
+
+
