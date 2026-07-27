@@ -24,9 +24,62 @@ if (process.env.GEMINI_API_KEY) {
   });
 }
 
+// Input validation helpers
+function validateString(val: any, minLen: number, maxLen: number, name: string): string {
+  if (typeof val !== "string") {
+    throw new Error(`Invalid type for ${name}: expected string.`);
+  }
+  if (val.length < minLen || val.length > maxLen) {
+    throw new Error(`Invalid length for ${name}: must be between ${minLen} and ${maxLen} characters.`);
+  }
+  return val;
+}
+
+function validateInteger(val: any, minVal: number, maxVal: number, name: string): number {
+  const num = Number(val);
+  if (!Number.isInteger(num)) {
+    throw new Error(`Invalid type for ${name}: expected integer.`);
+  }
+  if (num < minVal || num > maxVal) {
+    throw new Error(`Invalid value for ${name}: must be between ${minVal} and ${maxVal}.`);
+  }
+  return num;
+}
+
+function validateHistory(history: any): any[] {
+  if (history !== undefined && !Array.isArray(history)) {
+    throw new Error(`Invalid type for history: expected array.`);
+  }
+  const result: any[] = [];
+  if (Array.isArray(history)) {
+    for (const h of history) {
+      if (!h || typeof h !== "object" || typeof h.role !== "string" || typeof h.content !== "string") {
+        throw new Error(`Invalid history format.`);
+      }
+      if (h.role !== "user" && h.role !== "model" && h.role !== "system") {
+        throw new Error(`Invalid history role: ${h.role}`);
+      }
+      result.push({
+        role: h.role,
+        content: validateString(h.content, 1, 2000, "history content")
+      });
+    }
+  }
+  return result;
+}
+
 // 1. API: AI Standard-Aligned Question Generator
 app.post("/api/ai/generate-question", async (req, res) => {
   const { subject, topic, difficulty, paperType } = req.body;
+
+  try {
+    validateString(subject, 1, 100, "subject");
+    validateString(topic, 1, 200, "topic");
+    validateString(difficulty, 1, 100, "difficulty");
+    validateString(paperType, 1, 100, "paperType");
+  } catch (validationErr: any) {
+    return res.status(400).json({ error: validationErr.message });
+  }
 
   if (!ai) {
     return res.status(200).json({
@@ -125,13 +178,20 @@ The question must:
     res.json(parsedQuestion);
   } catch (error: any) {
     console.error("AI Generation error:", error);
-    res.status(500).json({ error: "Failed to generate question: " + error.message });
+    res.status(500).json({ error: "Failed to generate question" });
   }
 });
 
 // 2. API: Cambridge Academic Tutor Chatbot
 app.post("/api/ai/tutor", async (req, res) => {
   const { message, history } = req.body;
+
+  try {
+    validateString(message, 1, 1000, "message");
+    validateHistory(history);
+  } catch (validationErr: any) {
+    return res.status(400).json({ error: validationErr.message });
+  }
 
   if (!ai) {
     return res.json({
@@ -176,7 +236,7 @@ app.post("/api/ai/tutor", async (req, res) => {
     res.json({ reply: result.text });
   } catch (error: any) {
     console.error("AI Tutor error:", error);
-    res.status(500).json({ error: "Tutor offline: " + error.message });
+    res.status(500).json({ error: "Tutor offline" });
   }
 });
 
@@ -184,8 +244,11 @@ app.post("/api/ai/tutor", async (req, res) => {
 app.post("/api/ai/reading-assistance", async (req, res) => {
   const { text, numQuestions = 3 } = req.body;
 
-  if (!text || !text.trim()) {
-    return res.status(400).json({ error: "Text content is required for reading assistance." });
+  try {
+    validateString(text && typeof text === "string" ? text.trim() : text, 1, 10000, "text");
+    validateInteger(numQuestions, 1, 20, "numQuestions");
+  } catch (validationErr: any) {
+    return res.status(400).json({ error: validationErr.message });
   }
 
   if (!ai) {
@@ -300,13 +363,23 @@ ${text}
     res.json(result);
   } catch (error: any) {
     console.error("Reading assistance generation err:", error);
-    res.status(500).json({ error: "Failed to generate reading assistance: " + error.message });
+    res.status(500).json({ error: "Failed to generate reading assistance" });
   }
 });
 
 // 3.5. API: IGCSE Approved Online Material Selector & Synthesis (Grades 1 to 11)
 app.post("/api/ai/online-igcse-material", async (req, res) => {
   const { grade, subject, topicKeyword } = req.body;
+
+  try {
+    validateInteger(grade, 1, 11, "grade");
+    validateString(subject, 1, 100, "subject");
+    if (topicKeyword !== undefined && topicKeyword !== null) {
+      validateString(topicKeyword, 0, 100, "topicKeyword");
+    }
+  } catch (validationErr: any) {
+    return res.status(400).json({ error: validationErr.message });
+  }
   
   const gradeNum = parseInt(grade) || 7;
   const subName = subject || "General Science";
@@ -481,7 +554,7 @@ The lesson must:
     res.json(finalResource);
   } catch (error: any) {
     console.error("Online resource synthesis error:", error);
-    res.status(500).json({ error: "Failed to synthesize approved online study material: " + error.message });
+    res.status(500).json({ error: "Failed to synthesize approved online study material" });
   }
 });
 
