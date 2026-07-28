@@ -11,6 +11,52 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Helper functions for validating input types, lengths, and bounds to prevent security issues
+function validateString(val: any, minLen = 1, maxLen = 10000): string {
+  if (typeof val !== "string") {
+    throw new Error("Invalid input: expected string");
+  }
+  const trimmed = val.trim();
+  if (trimmed.length < minLen || trimmed.length > maxLen) {
+    throw new Error(`Invalid input: length must be between ${minLen} and ${maxLen}`);
+  }
+  return trimmed;
+}
+
+function validateInteger(val: any, minVal: number, maxVal: number): number {
+  const num = Number(val);
+  if (!Number.isInteger(num)) {
+    throw new Error("Invalid input: expected integer");
+  }
+  if (num < minVal || num > maxVal) {
+    throw new Error(`Invalid input: must be between ${minVal} and ${maxVal}`);
+  }
+  return num;
+}
+
+interface ChatHistoryItem {
+  role: string;
+  content: string;
+}
+
+function validateHistory(history: any): ChatHistoryItem[] {
+  if (history !== undefined && !Array.isArray(history)) {
+    throw new Error("Invalid input: history must be an array");
+  }
+  const validated: ChatHistoryItem[] = [];
+  if (history) {
+    for (const h of history) {
+      if (typeof h !== "object" || h === null) {
+        throw new Error("Invalid input: history elements must be objects");
+      }
+      const role = validateString(h.role, 1, 50);
+      const content = validateString(h.content, 1, 5000);
+      validated.push({ role, content });
+    }
+  }
+  return validated;
+}
+
 // Initialize server-side Gemini client as instructed
 let ai: GoogleGenAI | null = null;
 if (process.env.GEMINI_API_KEY) {
@@ -26,16 +72,19 @@ if (process.env.GEMINI_API_KEY) {
 
 // 1. API: AI Standard-Aligned Question Generator
 app.post("/api/ai/generate-question", async (req, res) => {
-  const { subject, topic, difficulty, paperType } = req.body;
-
-  if (!ai) {
-    return res.status(200).json({
-      error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
-      fallback: true
-    });
-  }
-
   try {
+    const subject = validateString(req.body.subject, 1, 100);
+    const topic = validateString(req.body.topic, 1, 100);
+    const difficulty = validateString(req.body.difficulty, 1, 100);
+    const paperType = validateString(req.body.paperType, 1, 100);
+
+    if (!ai) {
+      return res.status(200).json({
+        error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
+        fallback: true
+      });
+    }
+
     const prompt = `Generate a high-quality Cambridge IGCSE standard question for:
 Subject: ${subject}
 Topic: ${topic}
@@ -125,22 +174,26 @@ The question must:
     res.json(parsedQuestion);
   } catch (error: any) {
     console.error("AI Generation error:", error);
-    res.status(500).json({ error: "Failed to generate question: " + error.message });
+    if (error.message && error.message.startsWith("Invalid input:")) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Failed to generate question. Please try again later." });
   }
 });
 
 // 2. API: Cambridge Academic Tutor Chatbot
 app.post("/api/ai/tutor", async (req, res) => {
-  const { message, history } = req.body;
-
-  if (!ai) {
-    return res.json({
-      reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
-    });
-  }
-
   try {
-    const chatHistory = (history || []).map((h: { role: string; content: string }) => ({
+    const message = validateString(req.body.message, 1, 5000);
+    const history = validateHistory(req.body.history);
+
+    if (!ai) {
+      return res.json({
+        reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
+      });
+    }
+
+    const chatHistory = history.map((h) => ({
       role: h.role === "user" ? "user" : "model",
       parts: [{ text: h.content }]
     }));
@@ -176,20 +229,21 @@ app.post("/api/ai/tutor", async (req, res) => {
     res.json({ reply: result.text });
   } catch (error: any) {
     console.error("AI Tutor error:", error);
-    res.status(500).json({ error: "Tutor offline: " + error.message });
+    if (error.message && error.message.startsWith("Invalid input:")) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Tutor offline. Please try again later." });
   }
 });
 
 // 3. API: AI Reading Assistant (Summarizer & Practice Question Creator)
 app.post("/api/ai/reading-assistance", async (req, res) => {
-  const { text, numQuestions = 3 } = req.body;
+  try {
+    const text = validateString(req.body.text, 1, 50000);
+    const numQuestions = validateInteger(req.body.numQuestions ?? 3, 1, 10);
 
-  if (!text || !text.trim()) {
-    return res.status(400).json({ error: "Text content is required for reading assistance." });
-  }
-
-  if (!ai) {
-    return res.status(200).json({
+    if (!ai) {
+      return res.status(200).json({
       error: "Gemini API key is not configured, but our offline sandbox successfully simulated your guide analysis!",
       offline: true,
       summary: `### Core Summary of Provided Text
@@ -233,8 +287,7 @@ This text detailing curriculum study requirements covers key elements of academi
     });
   }
 
-  try {
-    const prompt = `You are a Senior Cambridge IGCSE Examiner and Academic Tutor.
+  const prompt = `You are a Senior Cambridge IGCSE Examiner and Academic Tutor.
 Analyze the following study text and generate high-value Reading Assistance:
 1. Provide a comprehensive, clean Markdown summary of the text highlighting core definitions, formulas, or biological/chemical/mathematical concepts with Examiner Tips.
 2. Generate exactly ${numQuestions} custom practice questions directly testing the material.
@@ -300,27 +353,29 @@ ${text}
     res.json(result);
   } catch (error: any) {
     console.error("Reading assistance generation err:", error);
-    res.status(500).json({ error: "Failed to generate reading assistance: " + error.message });
+    if (error.message && error.message.startsWith("Invalid input:")) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Failed to generate reading assistance. Please try again later." });
   }
 });
 
 // 3.5. API: IGCSE Approved Online Material Selector & Synthesis (Grades 1 to 11)
 app.post("/api/ai/online-igcse-material", async (req, res) => {
-  const { grade, subject, topicKeyword } = req.body;
-  
-  const gradeNum = parseInt(grade) || 7;
-  const subName = subject || "General Science";
-  const topic = topicKeyword || "Core Concepts";
+  try {
+    const gradeNum = req.body.grade !== undefined ? validateInteger(req.body.grade, 1, 12) : 7;
+    const subName = req.body.subject ? validateString(req.body.subject, 1, 100) : "General Science";
+    const topic = req.body.topicKeyword ? validateString(req.body.topicKeyword, 1, 200) : "Core Concepts";
 
-  // Determine stage group
-  let curriculumStage = "Cambridge Upper Secondary";
-  if (gradeNum <= 5) {
-    curriculumStage = "Cambridge International Primary";
-  } else if (gradeNum <= 8) {
-    curriculumStage = "Cambridge Lower Secondary";
-  }
+    // Determine stage group
+    let curriculumStage = "Cambridge Upper Secondary";
+    if (gradeNum <= 5) {
+      curriculumStage = "Cambridge International Primary";
+    } else if (gradeNum <= 8) {
+      curriculumStage = "Cambridge Lower Secondary";
+    }
 
-  if (!ai) {
+    if (!ai) {
     // Generate an incredibly detailed and responsive offline study material tailored to their exact selections
     let title = `Syllabus Guide: ${subName} (${topic}) - Grade ${gradeNum}`;
     let syllabusCode = `CAIE-${subName.substring(0,3).toUpperCase()}-G${gradeNum}`;
@@ -411,8 +466,7 @@ The mark scheme is heavily structured. When an item has 3 marks allocated, write
     });
   }
 
-  try {
-    const prompt = `Generate a highly professional, pristine academic study material lesson resource approved for:
+  const prompt = `Generate a highly professional, pristine academic study material lesson resource approved for:
 Education Grade Level: Grade ${gradeNum} (${curriculumStage})
 School Subject: ${subName}
 Target Topic Core Concept: ${topic}
@@ -481,7 +535,10 @@ The lesson must:
     res.json(finalResource);
   } catch (error: any) {
     console.error("Online resource synthesis error:", error);
-    res.status(500).json({ error: "Failed to synthesize approved online study material: " + error.message });
+    if (error.message && error.message.startsWith("Invalid input:")) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Failed to synthesize approved online study material. Please try again later." });
   }
 });
 
