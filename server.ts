@@ -6,6 +6,58 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+// Custom ValidationError class for server-side input validation
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
+// Validation helper for strings
+export function validateString(
+  value: any,
+  name: string,
+  options: { minLength?: number; maxLength?: number; allowedValues?: string[] } = {}
+): string {
+  if (typeof value !== "string") {
+    throw new ValidationError(`${name} must be a string.`);
+  }
+  const trimmed = value.trim();
+  if (options.minLength !== undefined && trimmed.length < options.minLength) {
+    throw new ValidationError(`${name} must be at least ${options.minLength} character(s) long.`);
+  }
+  if (options.maxLength !== undefined && trimmed.length > options.maxLength) {
+    throw new ValidationError(`${name} must not exceed ${options.maxLength} characters.`);
+  }
+  if (options.allowedValues !== undefined && !options.allowedValues.includes(trimmed)) {
+    throw new ValidationError(`${name} must be one of the allowed values: ${options.allowedValues.join(", ")}.`);
+  }
+  return trimmed;
+}
+
+// Validation helper for integers
+export function validateInteger(
+  value: any,
+  name: string,
+  options: { min?: number; max?: number } = {}
+): number {
+  if (value === undefined || value === null) {
+    throw new ValidationError(`${name} is required.`);
+  }
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed) || typeof value === "object" || Array.isArray(value)) {
+    throw new ValidationError(`${name} must be a valid integer.`);
+  }
+  if (options.min !== undefined && parsed < options.min) {
+    throw new ValidationError(`${name} must be at least ${options.min}.`);
+  }
+  if (options.max !== undefined && parsed > options.max) {
+    throw new ValidationError(`${name} must be at most ${options.max}.`);
+  }
+  return parsed;
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -26,16 +78,19 @@ if (process.env.GEMINI_API_KEY) {
 
 // 1. API: AI Standard-Aligned Question Generator
 app.post("/api/ai/generate-question", async (req, res) => {
-  const { subject, topic, difficulty, paperType } = req.body;
-
-  if (!ai) {
-    return res.status(200).json({
-      error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
-      fallback: true
-    });
-  }
-
   try {
+    const subject = validateString(req.body.subject, "Subject", { minLength: 1, maxLength: 50 });
+    const topic = validateString(req.body.topic, "Topic", { minLength: 1, maxLength: 100 });
+    const difficulty = validateString(req.body.difficulty, "Difficulty", { minLength: 1, maxLength: 50 });
+    const paperType = validateString(req.body.paperType, "Paper Type", { minLength: 1, maxLength: 100 });
+
+    if (!ai) {
+      return res.status(200).json({
+        error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
+        fallback: true
+      });
+    }
+
     const prompt = `Generate a high-quality Cambridge IGCSE standard question for:
 Subject: ${subject}
 Topic: ${topic}
@@ -124,22 +179,39 @@ The question must:
 
     res.json(parsedQuestion);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("AI Generation error:", error);
-    res.status(500).json({ error: "Failed to generate question: " + error.message });
+    res.status(500).json({ error: "An unexpected error occurred while generating the question." });
   }
 });
 
 // 2. API: Cambridge Academic Tutor Chatbot
 app.post("/api/ai/tutor", async (req, res) => {
-  const { message, history } = req.body;
-
-  if (!ai) {
-    return res.json({
-      reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
-    });
-  }
-
   try {
+    const message = validateString(req.body.message, "Message", { minLength: 1, maxLength: 1000 });
+    const history = req.body.history;
+    if (history !== undefined) {
+      if (!Array.isArray(history)) {
+        throw new ValidationError("History must be an array.");
+      }
+      for (let i = 0; i < history.length; i++) {
+        const h = history[i];
+        if (!h || typeof h !== "object") {
+          throw new ValidationError(`History element at index ${i} must be an object.`);
+        }
+        validateString(h.role, `History[${i}].role`, { allowedValues: ["user", "model", "assistant"] });
+        validateString(h.content, `History[${i}].content`, { minLength: 1, maxLength: 2000 });
+      }
+    }
+
+    if (!ai) {
+      return res.json({
+        reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
+      });
+    }
+
     const chatHistory = (history || []).map((h: { role: string; content: string }) => ({
       role: h.role === "user" ? "user" : "model",
       parts: [{ text: h.content }]
@@ -175,23 +247,24 @@ app.post("/api/ai/tutor", async (req, res) => {
 
     res.json({ reply: result.text });
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("AI Tutor error:", error);
-    res.status(500).json({ error: "Tutor offline: " + error.message });
+    res.status(500).json({ error: "An unexpected error occurred in the AI Tutor." });
   }
 });
 
 // 3. API: AI Reading Assistant (Summarizer & Practice Question Creator)
 app.post("/api/ai/reading-assistance", async (req, res) => {
-  const { text, numQuestions = 3 } = req.body;
+  try {
+    const text = validateString(req.body.text, "Text", { minLength: 1, maxLength: 10000 });
+    const numQuestions = validateInteger(req.body.numQuestions !== undefined ? req.body.numQuestions : 3, "Number of questions", { min: 1, max: 10 });
 
-  if (!text || !text.trim()) {
-    return res.status(400).json({ error: "Text content is required for reading assistance." });
-  }
-
-  if (!ai) {
-    return res.status(200).json({
-      error: "Gemini API key is not configured, but our offline sandbox successfully simulated your guide analysis!",
-      offline: true,
+    if (!ai) {
+      return res.status(200).json({
+        error: "Gemini API key is not configured, but our offline sandbox successfully simulated your guide analysis!",
+        offline: true,
       summary: `### Core Summary of Provided Text
 This text detailing curriculum study requirements covers key elements of academic candidate benchmarks.
 
@@ -233,8 +306,7 @@ This text detailing curriculum study requirements covers key elements of academi
     });
   }
 
-  try {
-    const prompt = `You are a Senior Cambridge IGCSE Examiner and Academic Tutor.
+  const prompt = `You are a Senior Cambridge IGCSE Examiner and Academic Tutor.
 Analyze the following study text and generate high-value Reading Assistance:
 1. Provide a comprehensive, clean Markdown summary of the text highlighting core definitions, formulas, or biological/chemical/mathematical concepts with Examiner Tips.
 2. Generate exactly ${numQuestions} custom practice questions directly testing the material.
@@ -299,28 +371,30 @@ ${text}
 
     res.json(result);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("Reading assistance generation err:", error);
-    res.status(500).json({ error: "Failed to generate reading assistance: " + error.message });
+    res.status(500).json({ error: "An unexpected error occurred while generating reading assistance." });
   }
 });
 
 // 3.5. API: IGCSE Approved Online Material Selector & Synthesis (Grades 1 to 11)
 app.post("/api/ai/online-igcse-material", async (req, res) => {
-  const { grade, subject, topicKeyword } = req.body;
-  
-  const gradeNum = parseInt(grade) || 7;
-  const subName = subject || "General Science";
-  const topic = topicKeyword || "Core Concepts";
+  try {
+    const gradeNum = validateInteger(req.body.grade !== undefined ? req.body.grade : 7, "Grade", { min: 1, max: 11 });
+    const subName = validateString(req.body.subject || "General Science", "Subject", { minLength: 1, maxLength: 50 });
+    const topic = validateString(req.body.topicKeyword || "Core Concepts", "Topic keyword", { minLength: 1, maxLength: 100 });
 
-  // Determine stage group
-  let curriculumStage = "Cambridge Upper Secondary";
-  if (gradeNum <= 5) {
-    curriculumStage = "Cambridge International Primary";
-  } else if (gradeNum <= 8) {
-    curriculumStage = "Cambridge Lower Secondary";
-  }
+    // Determine stage group
+    let curriculumStage = "Cambridge Upper Secondary";
+    if (gradeNum <= 5) {
+      curriculumStage = "Cambridge International Primary";
+    } else if (gradeNum <= 8) {
+      curriculumStage = "Cambridge Lower Secondary";
+    }
 
-  if (!ai) {
+    if (!ai) {
     // Generate an incredibly detailed and responsive offline study material tailored to their exact selections
     let title = `Syllabus Guide: ${subName} (${topic}) - Grade ${gradeNum}`;
     let syllabusCode = `CAIE-${subName.substring(0,3).toUpperCase()}-G${gradeNum}`;
@@ -411,8 +485,7 @@ The mark scheme is heavily structured. When an item has 3 marks allocated, write
     });
   }
 
-  try {
-    const prompt = `Generate a highly professional, pristine academic study material lesson resource approved for:
+  const prompt = `Generate a highly professional, pristine academic study material lesson resource approved for:
 Education Grade Level: Grade ${gradeNum} (${curriculumStage})
 School Subject: ${subName}
 Target Topic Core Concept: ${topic}
@@ -480,8 +553,11 @@ The lesson must:
 
     res.json(finalResource);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("Online resource synthesis error:", error);
-    res.status(500).json({ error: "Failed to synthesize approved online study material: " + error.message });
+    res.status(500).json({ error: "An unexpected error occurred while synthesizing online study material." });
   }
 });
 
