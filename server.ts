@@ -24,18 +24,67 @@ if (process.env.GEMINI_API_KEY) {
   });
 }
 
-// 1. API: AI Standard-Aligned Question Generator
-app.post("/api/ai/generate-question", async (req, res) => {
-  const { subject, topic, difficulty, paperType } = req.body;
+// Custom ValidationError for precise identification of client validation issues
+class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
 
-  if (!ai) {
-    return res.status(200).json({
-      error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
-      fallback: true
-    });
+// Input validation helpers
+function validateString(value: any, name: string, minLength = 1, maxLength = 2000): string {
+  if (typeof value !== "string") {
+    throw new ValidationError(`Parameter '${name}' must be a string.`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length < minLength) {
+    throw new ValidationError(`Parameter '${name}' cannot be empty.`);
+  }
+  if (trimmed.length > maxLength) {
+    throw new ValidationError(`Parameter '${name}' must not exceed ${maxLength} characters.`);
+  }
+  return trimmed;
+}
+
+function validateInteger(value: any, name: string, min?: number, max?: number): number {
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    parsed = parseInt(value, 10);
+  } else {
+    throw new ValidationError(`Parameter '${name}' must be an integer.`);
   }
 
+  if (isNaN(parsed) || !Number.isInteger(parsed)) {
+    throw new ValidationError(`Parameter '${name}' must be a valid integer.`);
+  }
+
+  if (min !== undefined && parsed < min) {
+    throw new ValidationError(`Parameter '${name}' must be at least ${min}.`);
+  }
+  if (max !== undefined && parsed > max) {
+    throw new ValidationError(`Parameter '${name}' must be at most ${max}.`);
+  }
+  return parsed;
+}
+
+// 1. API: AI Standard-Aligned Question Generator
+app.post("/api/ai/generate-question", async (req, res) => {
   try {
+    const subject = validateString(req.body.subject, "subject", 1, 100);
+    const topic = validateString(req.body.topic, "topic", 1, 300);
+    const difficulty = validateString(req.body.difficulty, "difficulty", 1, 100);
+    const paperType = validateString(req.body.paperType, "paperType", 1, 100);
+
+    if (!ai) {
+      return res.status(200).json({
+        error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
+        fallback: true
+      });
+    }
+
     const prompt = `Generate a high-quality Cambridge IGCSE standard question for:
 Subject: ${subject}
 Topic: ${topic}
@@ -124,22 +173,38 @@ The question must:
 
     res.json(parsedQuestion);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("AI Generation error:", error);
-    res.status(500).json({ error: "Failed to generate question: " + error.message });
+    res.status(500).json({ error: "Failed to generate question due to an unexpected backend error." });
   }
 });
 
 // 2. API: Cambridge Academic Tutor Chatbot
 app.post("/api/ai/tutor", async (req, res) => {
-  const { message, history } = req.body;
-
-  if (!ai) {
-    return res.json({
-      reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
-    });
-  }
-
   try {
+    const message = validateString(req.body.message, "message", 1, 10000);
+    const history = req.body.history;
+    if (history !== undefined) {
+      if (!Array.isArray(history)) {
+        throw new ValidationError("Parameter 'history' must be an array.");
+      }
+      for (const h of history) {
+        if (typeof h !== "object" || h === null) {
+          throw new ValidationError("Each item in 'history' must be an object.");
+        }
+        validateString(h.role, "history[].role", 1, 50);
+        validateString(h.content, "history[].content", 1, 10000);
+      }
+    }
+
+    if (!ai) {
+      return res.json({
+        reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
+      });
+    }
+
     const chatHistory = (history || []).map((h: { role: string; content: string }) => ({
       role: h.role === "user" ? "user" : "model",
       parts: [{ text: h.content }]
@@ -175,24 +240,25 @@ app.post("/api/ai/tutor", async (req, res) => {
 
     res.json({ reply: result.text });
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("AI Tutor error:", error);
-    res.status(500).json({ error: "Tutor offline: " + error.message });
+    res.status(500).json({ error: "Tutor offline due to an unexpected backend error." });
   }
 });
 
 // 3. API: AI Reading Assistant (Summarizer & Practice Question Creator)
 app.post("/api/ai/reading-assistance", async (req, res) => {
-  const { text, numQuestions = 3 } = req.body;
+  try {
+    const text = validateString(req.body.text, "text", 1, 50000);
+    const numQuestions = validateInteger(req.body.numQuestions !== undefined ? req.body.numQuestions : 3, "numQuestions", 1, 10);
 
-  if (!text || !text.trim()) {
-    return res.status(400).json({ error: "Text content is required for reading assistance." });
-  }
-
-  if (!ai) {
-    return res.status(200).json({
-      error: "Gemini API key is not configured, but our offline sandbox successfully simulated your guide analysis!",
-      offline: true,
-      summary: `### Core Summary of Provided Text
+    if (!ai) {
+      return res.status(200).json({
+        error: "Gemini API key is not configured, but our offline sandbox successfully simulated your guide analysis!",
+        offline: true,
+        summary: `### Core Summary of Provided Text
 This text detailing curriculum study requirements covers key elements of academic candidate benchmarks.
 
 *   **Key Concept**: Systematic revision builds operational competence.
@@ -200,40 +266,39 @@ This text detailing curriculum study requirements covers key elements of academi
 *   **Formula Focus**: Ensure all physical constants or chemical balance calculations are written out with units.
 
 *Examiner Study Tip*: Scoring full points requires addressing each point-marking scheme explicitly rather than summarizing generally.`,
-      questions: [
-        {
-          id: `q-ra-off-${Date.now()}-1`,
-          questionText: "Outline the key distinction between general summarization and the precise use of candidate command words when answering examination questions.",
-          marks: 2,
-          modelAnswer: "Precise command words target specific mark scheme points (e.g., 'Describe' vs. 'Explain' triggers a mechanical point grid), whereas general summarization misses key terminologies necessary for credit under examiner criteria.",
-          explanation: "In Cambridge papers, answering exactly matching the command terms ensures you don't lose credit for writing excessive general text that lacks specific keywords.",
-          markSchemePoints: [
-            "Identifies command words as target-specific criteria triggers (1 Mark)",
-            "Contrasts with general summarization missing key credit milestones (1 Mark)"
-          ]
-        },
-        {
-          id: `q-ra-off-${Date.now()}-2`,
-          questionText: "What are the core command words used in Cambridge examination grading?",
-          marks: 1,
-          options: [
-            "Summarize, Outline, Present",
-            "Describe, Explain, State, Calculate",
-            "Synthesize, Memorize, Rewrite",
-            "Discuss, Debate, Argue"
-          ],
-          correctOptionIndex: 1,
-          modelAnswer: "Describe, Explain, State, Calculate (Option B). These are the formal command verbs declared in syllabus guidelines.",
-          explanation: "Cambridge examinations use precise command words to signal the exact nature and depth of response expected from candidates.",
-          markSchemePoints: [
-            "Identifies correct set of CAIE command verbs (1 Mark)"
-          ]
-        }
-      ]
-    });
-  }
+        questions: [
+          {
+            id: `q-ra-off-${Date.now()}-1`,
+            questionText: "Outline the key distinction between general summarization and the precise use of candidate command words when answering examination questions.",
+            marks: 2,
+            modelAnswer: "Precise command words target specific mark scheme points (e.g., 'Describe' vs. 'Explain' triggers a mechanical point grid), whereas general summarization misses key terminologies necessary for credit under examiner criteria.",
+            explanation: "In Cambridge papers, answering exactly matching the command terms ensures you don't lose credit for writing excessive general text that lacks specific keywords.",
+            markSchemePoints: [
+              "Identifies command words as target-specific criteria triggers (1 Mark)",
+              "Contrasts with general summarization missing key credit milestones (1 Mark)"
+            ]
+          },
+          {
+            id: `q-ra-off-${Date.now()}-2`,
+            questionText: "What are the core command words used in Cambridge examination grading?",
+            marks: 1,
+            options: [
+              "Summarize, Outline, Present",
+              "Describe, Explain, State, Calculate",
+              "Synthesize, Memorize, Rewrite",
+              "Discuss, Debate, Argue"
+            ],
+            correctOptionIndex: 1,
+            modelAnswer: "Describe, Explain, State, Calculate (Option B). These are the formal command verbs declared in syllabus guidelines.",
+            explanation: "Cambridge examinations use precise command words to signal the exact nature and depth of response expected from candidates.",
+            markSchemePoints: [
+              "Identifies correct set of CAIE command verbs (1 Mark)"
+            ]
+          }
+        ]
+      });
+    }
 
-  try {
     const prompt = `You are a Senior Cambridge IGCSE Examiner and Academic Tutor.
 Analyze the following study text and generate high-value Reading Assistance:
 1. Provide a comprehensive, clean Markdown summary of the text highlighting core definitions, formulas, or biological/chemical/mathematical concepts with Examiner Tips.
@@ -299,40 +364,46 @@ ${text}
 
     res.json(result);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("Reading assistance generation err:", error);
-    res.status(500).json({ error: "Failed to generate reading assistance: " + error.message });
+    res.status(500).json({ error: "Failed to generate reading assistance due to an unexpected backend error." });
   }
 });
 
 // 3.5. API: IGCSE Approved Online Material Selector & Synthesis (Grades 1 to 11)
 app.post("/api/ai/online-igcse-material", async (req, res) => {
-  const { grade, subject, topicKeyword } = req.body;
-  
-  const gradeNum = parseInt(grade) || 7;
-  const subName = subject || "General Science";
-  const topic = topicKeyword || "Core Concepts";
+  try {
+    const grade = validateInteger(req.body.grade !== undefined ? req.body.grade : 7, "grade", 1, 11);
+    const subject = validateString(req.body.subject !== undefined ? req.body.subject : "General Science", "subject", 1, 100);
+    const topicKeyword = req.body.topicKeyword !== undefined ? validateString(req.body.topicKeyword, "topicKeyword", 0, 200) : "Core Concepts";
 
-  // Determine stage group
-  let curriculumStage = "Cambridge Upper Secondary";
-  if (gradeNum <= 5) {
-    curriculumStage = "Cambridge International Primary";
-  } else if (gradeNum <= 8) {
-    curriculumStage = "Cambridge Lower Secondary";
-  }
+    const gradeNum = grade;
+    const subName = subject;
+    const topic = topicKeyword || "Core Concepts";
 
-  if (!ai) {
-    // Generate an incredibly detailed and responsive offline study material tailored to their exact selections
-    let title = `Syllabus Guide: ${subName} (${topic}) - Grade ${gradeNum}`;
-    let syllabusCode = `CAIE-${subName.substring(0,3).toUpperCase()}-G${gradeNum}`;
-    let difficulty = "Medium";
-    let resourceType = "Revision Guide";
-    let tags = [subName, `Grade ${gradeNum}`, "Revision", topic];
-    let content = "";
-    
+    // Determine stage group
+    let curriculumStage = "Cambridge Upper Secondary";
     if (gradeNum <= 5) {
-      difficulty = "Easy";
-      resourceType = "Notes";
-      content = `# ${subName} - Grade ${gradeNum} Primary Lesson Notes
+      curriculumStage = "Cambridge International Primary";
+    } else if (gradeNum <= 8) {
+      curriculumStage = "Cambridge Lower Secondary";
+    }
+
+    if (!ai) {
+      // Generate an incredibly detailed and responsive offline study material tailored to their exact selections
+      let title = `Syllabus Guide: ${subName} (${topic}) - Grade ${gradeNum}`;
+      let syllabusCode = `CAIE-${subName.substring(0,3).toUpperCase()}-G${gradeNum}`;
+      let difficulty = "Medium";
+      let resourceType = "Revision Guide";
+      let tags = [subName, `Grade ${gradeNum}`, "Revision", topic];
+      let content = "";
+
+      if (gradeNum <= 5) {
+        difficulty = "Easy";
+        resourceType = "Notes";
+        content = `# ${subName} - Grade ${gradeNum} Primary Lesson Notes
 ## Focus Area: ${topic}
 
 Welcome to your Cambridge Primary aligned preparation board! At this level (Grade ${gradeNum}), we focus on discovering foundational phenomena.
@@ -348,10 +419,10 @@ Welcome to your Cambridge Primary aligned preparation board! At this level (Grad
 ---
 ### 💡 Cambridge Primary Examiner Tip
 Always use neat, colorful line drawings to label parts (like flowers, shapes, or basic chemical glassware). Be clear about writing down correct standard units!`;
-    } else if (gradeNum <= 8) {
-      difficulty = "Medium";
-      resourceType = "Revision Guide";
-      content = `# Grade ${gradeNum} ${subName} - Syllabus Analysis
+      } else if (gradeNum <= 8) {
+        difficulty = "Medium";
+        resourceType = "Revision Guide";
+        content = `# Grade ${gradeNum} ${subName} - Syllabus Analysis
 ## Topic Ref: ${topic}
 
 This comprehensive revision document is aligned with the **Cambridge Lower Secondary (Grades 6-8)** standards for Grade ${gradeNum}.
@@ -362,56 +433,55 @@ At Lower Secondary stage, ${topic} is evaluated on qualitative descriptions and 
 1.  **Scientific Inquiry & Mechanics**: We analyze the cause-and-effect relationship in ${topic}. For instance, increasing the input results in an immediate responsive change.
 2.  **Key Definition**: 
     > **"${topic}"**: State clearly how this core mechanism is defined in examination past papers to score full marks.
-3.  **Experimental Methodologies**:
-    *   **Independent Variable**: What we change to inspect state changes.
-    *   **Dependent Variable**: What we measure.
-    *   **Control Variables**: What we keep exactly constant to ensure a **fair test**.
+  3.  **Experimental Methodologies**:
+      *   **Independent Variable**: What we change to inspect state changes.
+      *   **Dependent Variable**: What we measure.
+      *   **Control Variables**: What we keep exactly constant to ensure a **fair test**.
 
----
-### 📝 Lower Secondary Study Secret
-Never use vague terms like 'feel the heat' or 'the speed increases fast'. Instead, write command-aligned phrases like: "thermodynamic convection occurs" or "acceleration of ${subName} increases proportionally."`;
-    } else {
-      difficulty = "Exam Standard";
-      resourceType = "Revision Guide";
-      syllabusCode = subName.toLowerCase().includes("math") ? "0580/Extended" : subName.toLowerCase().includes("bio") ? "0610/Paper4" : subName.toLowerCase().includes("chem") ? "0620/Paper4" : "0983/Syllabus";
-      content = `# Cambridge IGCSE ${subName} (Grade ${gradeNum}) Extended Revision Guide
-## Module: ${topic} • Syllabus Ref: ${syllabusCode}
+  ---
+  ### 📝 Lower Secondary Study Secret
+  Never use vague terms like 'feel the heat' or 'the speed increases fast'. Instead, write command-aligned phrases like: "thermodynamic convection occurs" or "acceleration of ${subName} increases proportionally."`;
+      } else {
+        difficulty = "Exam Standard";
+        resourceType = "Revision Guide";
+        syllabusCode = subName.toLowerCase().includes("math") ? "0580/Extended" : subName.toLowerCase().includes("bio") ? "0610/Paper4" : subName.toLowerCase().includes("chem") ? "0620/Paper4" : "0983/Syllabus";
+        content = `# Cambridge IGCSE ${subName} (Grade ${gradeNum}) Extended Revision Guide
+  ## Module: ${topic} • Syllabus Ref: ${syllabusCode}
 
-This study guide has been synthesized to align with the core **Cambridge IGCSE GCE O-Level (Grades 9-11)** examiner descriptors.
+  This study guide has been synthesized to align with the core **Cambridge IGCSE GCE O-Level (Grades 9-11)** examiner descriptors.
 
-### 📌 Command Word Breakdowns
-To secure the maximum number of marks in structured theoretical papers, carefully parse these commands:
-*   **Describe**: State the points of a topic or give characteristics/features (e.g., "Describe the physical state variables of ${topic}"). No explanation of *why* is required!
-*   **Explain**: Provide a clear causal path, mentioning details or reasons. Always include the word **"because"** or **"therefore"**!
+  ### 📌 Command Word Breakdowns
+  To secure the maximum number of marks in structured theoretical papers, carefully parse these commands:
+  *   **Describe**: State the points of a topic or give characteristics/features (e.g., "Describe the physical state variables of ${topic}"). No explanation of *why* is required!
+  *   **Explain**: Provide a clear causal path, mentioning details or reasons. Always include the word **"because"** or **"therefore"**!
 
-### 🧪 Advanced Laboratory Practical Check (Paper 6 Focus)
-When asked for experimental improvements on ${topic}, prioritize these high-yield Examiner tips:
-1.  **Insulation & Heat Loss**: Use lagged beakers or a polystyrene cup with a lid to restrict ambient thermal losses.
-2.  **Parallax Error avoidance**: View measuring cylinders or thermometers at eye-level, perpendicular to the meniscus line scale.
-3.  **Reliability checks**: Always state that you will repeat the experiment at least 3 times and calculate the average mean value to eliminate anomalies.
+  ### 🧪 Advanced Laboratory Practical Check (Paper 6 Focus)
+  When asked for experimental improvements on ${topic}, prioritize these high-yield Examiner tips:
+  1.  **Insulation & Heat Loss**: Use lagged beakers or a polystyrene cup with a lid to restrict ambient thermal losses.
+  2.  **Parallax Error avoidance**: View measuring cylinders or thermometers at eye-level, perpendicular to the meniscus line scale.
+  3.  **Reliability checks**: Always state that you will repeat the experiment at least 3 times and calculate the average mean value to eliminate anomalies.
 
----
-### 🎓 IGCSE Exam Masterclass Tip
-The mark scheme is heavily structured. When an item has 3 marks allocated, write exactly 3 distinct bullet points emphasizing official CAIE keywords.`;
+  ---
+  ### 🎓 IGCSE Exam Masterclass Tip
+  The mark scheme is heavily structured. When an item has 3 marks allocated, write exactly 3 distinct bullet points emphasizing official CAIE keywords.`;
+      }
+
+      return res.status(200).json({
+        title,
+        subjectId: "bio", // fallback link to bio, can be modified in UI if needed
+        topicId: `online-item-${Date.now()}`,
+        subtopic: topic,
+        syllabusCode,
+        difficulty,
+        resourceType,
+        content,
+        author: "Cambridge Approved Online Synergy, offline mock-up fallback",
+        year: "2026",
+        tags,
+        warning: "Tutor running in offline demonstration mode. To sync with real-time AI servers, add a GEMINI_API_KEY to your Settings > Secrets panel."
+      });
     }
 
-    return res.status(200).json({
-      title,
-      subjectId: "bio", // fallback link to bio, can be modified in UI if needed
-      topicId: `online-item-${Date.now()}`,
-      subtopic: topic,
-      syllabusCode,
-      difficulty,
-      resourceType,
-      content,
-      author: "Cambridge Approved Online Synergy, offline mock-up fallback",
-      year: "2026",
-      tags,
-      warning: "Tutor running in offline demonstration mode. To sync with real-time AI servers, add a GEMINI_API_KEY to your Settings > Secrets panel."
-    });
-  }
-
-  try {
     const prompt = `Generate a highly professional, pristine academic study material lesson resource approved for:
 Education Grade Level: Grade ${gradeNum} (${curriculumStage})
 School Subject: ${subName}
@@ -480,8 +550,11 @@ The lesson must:
 
     res.json(finalResource);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("Online resource synthesis error:", error);
-    res.status(500).json({ error: "Failed to synthesize approved online study material: " + error.message });
+    res.status(500).json({ error: "Failed to synthesize approved online study material due to an unexpected backend error." });
   }
 });
 
