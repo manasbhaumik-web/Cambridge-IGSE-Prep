@@ -11,6 +11,43 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Custom ValidationError for client-side validation failures
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
+// Validation helper functions
+export function validateString(value: any, fieldName: string, minLength: number = 1, maxLength: number = 200): string {
+  if (typeof value !== "string") {
+    throw new ValidationError(`Field '${fieldName}' must be a string.`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length < minLength) {
+    throw new ValidationError(`Field '${fieldName}' must be at least ${minLength} characters long.`);
+  }
+  if (trimmed.length > maxLength) {
+    throw new ValidationError(`Field '${fieldName}' must be at most ${maxLength} characters long.`);
+  }
+  return trimmed;
+}
+
+export function validateInteger(value: any, fieldName: string, minVal?: number, maxVal?: number): number {
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed) || typeof value === "object" || typeof value === "boolean") {
+    throw new ValidationError(`Field '${fieldName}' must be a valid integer.`);
+  }
+  if (minVal !== undefined && parsed < minVal) {
+    throw new ValidationError(`Field '${fieldName}' must be at least ${minVal}.`);
+  }
+  if (maxVal !== undefined && parsed > maxVal) {
+    throw new ValidationError(`Field '${fieldName}' must be at most ${maxVal}.`);
+  }
+  return parsed;
+}
+
 // Initialize server-side Gemini client as instructed
 let ai: GoogleGenAI | null = null;
 if (process.env.GEMINI_API_KEY) {
@@ -26,14 +63,18 @@ if (process.env.GEMINI_API_KEY) {
 
 // 1. API: AI Standard-Aligned Question Generator
 app.post("/api/ai/generate-question", async (req, res) => {
-  const { subject, topic, difficulty, paperType } = req.body;
+  try {
+    const subject = validateString(req.body.subject, "subject", 1, 100);
+    const topic = validateString(req.body.topic, "topic", 1, 100);
+    const difficulty = validateString(req.body.difficulty, "difficulty", 1, 100);
+    const paperType = validateString(req.body.paperType, "paperType", 1, 100);
 
-  if (!ai) {
-    return res.status(200).json({
-      error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
-      fallback: true
-    });
-  }
+    if (!ai) {
+      return res.status(200).json({
+        error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
+        fallback: true
+      });
+    }
 
   try {
     const prompt = `Generate a high-quality Cambridge IGCSE standard question for:
@@ -124,23 +165,47 @@ The question must:
 
     res.json(parsedQuestion);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      throw error;
+    }
     console.error("AI Generation error:", error);
     res.status(500).json({ error: "Failed to generate question: " + error.message });
+  }
+  } catch (error: any) {
+    if (error instanceof ValidationError) {
+      res.status(400).json({ error: error.message });
+    } else {
+      console.error("Unexpected error in generate-question endpoint:", error);
+      res.status(500).json({ error: "An unexpected error occurred." });
+    }
   }
 });
 
 // 2. API: Cambridge Academic Tutor Chatbot
 app.post("/api/ai/tutor", async (req, res) => {
-  const { message, history } = req.body;
+  try {
+    const message = validateString(req.body.message, "message", 1, 1000);
+    const history = req.body.history;
+    if (history !== undefined && !Array.isArray(history)) {
+      throw new ValidationError("Field 'history' must be an array of messages.");
+    }
+    const safeHistory = (history || []).slice(-20); // Limit chat history to max 20 messages to prevent out-of-memory DoS
+    for (const h of safeHistory) {
+      if (typeof h !== "object" || h === null) {
+        throw new ValidationError("Each history item must be an object.");
+      }
+      validateString(h.role, "history[].role", 1, 50);
+      validateString(h.content, "history[].content", 1, 2000);
+    }
 
-  if (!ai) {
-    return res.json({
-      reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
-    });
-  }
+    if (!ai) {
+      return res.json({
+        reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
+      });
+    }
 
   try {
-    const chatHistory = (history || []).map((h: { role: string; content: string }) => ({
+    const chatHistory = safeHistory.map((h: any) => ({
       role: h.role === "user" ? "user" : "model",
       parts: [{ text: h.content }]
     }));
@@ -175,14 +240,27 @@ app.post("/api/ai/tutor", async (req, res) => {
 
     res.json({ reply: result.text });
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      throw error;
+    }
     console.error("AI Tutor error:", error);
     res.status(500).json({ error: "Tutor offline: " + error.message });
+  }
+  } catch (error: any) {
+    if (error instanceof ValidationError) {
+      res.status(400).json({ error: error.message });
+    } else {
+      console.error("Unexpected error in tutor endpoint:", error);
+      res.status(500).json({ error: "An unexpected error occurred." });
+    }
   }
 });
 
 // 3. API: AI Reading Assistant (Summarizer & Practice Question Creator)
 app.post("/api/ai/reading-assistance", async (req, res) => {
-  const { text, numQuestions = 3 } = req.body;
+  try {
+    const text = validateString(req.body.text, "text", 1, 10000);
+    const numQuestions = validateInteger(req.body.numQuestions !== undefined ? req.body.numQuestions : 3, "numQuestions", 1, 10);
 
   if (!text || !text.trim()) {
     return res.status(400).json({ error: "Text content is required for reading assistance." });
@@ -299,18 +377,32 @@ ${text}
 
     res.json(result);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      throw error;
+    }
     console.error("Reading assistance generation err:", error);
     res.status(500).json({ error: "Failed to generate reading assistance: " + error.message });
+  }
+  } catch (error: any) {
+    if (error instanceof ValidationError) {
+      res.status(400).json({ error: error.message });
+    } else {
+      console.error("Unexpected error in reading-assistance endpoint:", error);
+      res.status(500).json({ error: "An unexpected error occurred." });
+    }
   }
 });
 
 // 3.5. API: IGCSE Approved Online Material Selector & Synthesis (Grades 1 to 11)
 app.post("/api/ai/online-igcse-material", async (req, res) => {
-  const { grade, subject, topicKeyword } = req.body;
-  
-  const gradeNum = parseInt(grade) || 7;
-  const subName = subject || "General Science";
-  const topic = topicKeyword || "Core Concepts";
+  try {
+    const grade = validateInteger(req.body.grade !== undefined ? req.body.grade : 7, "grade", 1, 11);
+    const subject = validateString(req.body.subject !== undefined ? req.body.subject : "General Science", "subject", 1, 100);
+    const topicKeyword = validateString(req.body.topicKeyword !== undefined ? req.body.topicKeyword : "Core Concepts", "topicKeyword", 1, 100);
+
+    const gradeNum = grade;
+    const subName = subject;
+    const topic = topicKeyword;
 
   // Determine stage group
   let curriculumStage = "Cambridge Upper Secondary";
@@ -480,21 +572,32 @@ The lesson must:
 
     res.json(finalResource);
   } catch (error: any) {
+    if (error instanceof ValidationError) {
+      throw error;
+    }
     console.error("Online resource synthesis error:", error);
     res.status(500).json({ error: "Failed to synthesize approved online study material: " + error.message });
+  }
+  } catch (error: any) {
+    if (error instanceof ValidationError) {
+      res.status(400).json({ error: error.message });
+    } else {
+      console.error("Unexpected error in online-igcse-material endpoint:", error);
+      res.status(500).json({ error: "An unexpected error occurred." });
+    }
   }
 });
 
 // 4. Mount Vite Dev Server in Development, or Static Serving in Production
 async function bootstrap() {
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && process.env.NODE_ENV !== "test") {
     console.log("Starting in DEVELOPMENT mode...");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (process.env.NODE_ENV === "production") {
     console.log("Starting in PRODUCTION mode...");
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
@@ -503,9 +606,13 @@ async function bootstrap() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Express server listening at http://0.0.0.0:${PORT}`);
-  });
+  if (process.env.NODE_ENV !== "test") {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Express server listening at http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
 bootstrap();
+
+export default app;
