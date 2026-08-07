@@ -6,6 +6,41 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+// Custom Validation Error to distinguish client validation errors from unexpected backend errors
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
+// Input validation helper for strings
+export function validateString(val: any, fieldName: string, minLen = 1, maxLen = 1000): string {
+  if (typeof val !== "string") {
+    throw new ValidationError(`Field '${fieldName}' must be a string.`);
+  }
+  const trimmed = val.trim();
+  if (trimmed.length < minLen || trimmed.length > maxLen) {
+    throw new ValidationError(`Field '${fieldName}' must be between ${minLen} and ${maxLen} characters.`);
+  }
+  return trimmed;
+}
+
+// Input validation helper for integers
+export function validateInteger(val: any, fieldName: string, min: number, max: number): number {
+  if (val === undefined || val === null) {
+    throw new ValidationError(`Field '${fieldName}' is required.`);
+  }
+  const parsed = Number(val);
+  if (!Number.isInteger(parsed)) {
+    throw new ValidationError(`Field '${fieldName}' must be an integer.`);
+  }
+  if (parsed < min || parsed > max) {
+    throw new ValidationError(`Field '${fieldName}' must be between ${min} and ${max}.`);
+  }
+  return parsed;
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -26,16 +61,19 @@ if (process.env.GEMINI_API_KEY) {
 
 // 1. API: AI Standard-Aligned Question Generator
 app.post("/api/ai/generate-question", async (req, res) => {
-  const { subject, topic, difficulty, paperType } = req.body;
-
-  if (!ai) {
-    return res.status(200).json({
-      error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
-      fallback: true
-    });
-  }
-
   try {
+    const subject = validateString(req.body.subject, "subject", 1, 100);
+    const topic = validateString(req.body.topic, "topic", 1, 100);
+    const difficulty = validateString(req.body.difficulty, "difficulty", 1, 100);
+    const paperType = validateString(req.body.paperType, "paperType", 1, 100);
+
+    if (!ai) {
+      return res.status(200).json({
+        error: "Gemini API key is not configured, but you can practice using the high-quality preloaded Cambridge questions!",
+        fallback: true
+      });
+    }
+
     const prompt = `Generate a high-quality Cambridge IGCSE standard question for:
 Subject: ${subject}
 Topic: ${topic}
@@ -125,21 +163,37 @@ The question must:
     res.json(parsedQuestion);
   } catch (error: any) {
     console.error("AI Generation error:", error);
-    res.status(500).json({ error: "Failed to generate question: " + error.message });
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "An unexpected error occurred on the server." });
   }
 });
 
 // 2. API: Cambridge Academic Tutor Chatbot
 app.post("/api/ai/tutor", async (req, res) => {
-  const { message, history } = req.body;
-
-  if (!ai) {
-    return res.json({
-      reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
-    });
-  }
-
   try {
+    const message = validateString(req.body.message, "message", 1, 2000);
+    const history = req.body.history;
+    if (history !== undefined) {
+      if (!Array.isArray(history)) {
+        throw new ValidationError("Field 'history' must be an array.");
+      }
+      for (const item of history) {
+        if (!item || typeof item !== "object") {
+          throw new ValidationError("Each history item must be an object.");
+        }
+        validateString(item.role, "history.role", 1, 100);
+        validateString(item.content, "history.content", 1, 2000);
+      }
+    }
+
+    if (!ai) {
+      return res.json({
+        reply: "Hello! The Gemini API key is currently not active in this development preview, but I'm ready to serve as your local study partner! Let me know which topic in Math, Biology, Physics, or Chemistry you would like to review, and I will share my pre-packaged exam secrets with you!"
+      });
+    }
+
     const chatHistory = (history || []).map((h: { role: string; content: string }) => ({
       role: h.role === "user" ? "user" : "model",
       parts: [{ text: h.content }]
@@ -176,23 +230,26 @@ app.post("/api/ai/tutor", async (req, res) => {
     res.json({ reply: result.text });
   } catch (error: any) {
     console.error("AI Tutor error:", error);
-    res.status(500).json({ error: "Tutor offline: " + error.message });
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "An unexpected error occurred on the server." });
   }
 });
 
 // 3. API: AI Reading Assistant (Summarizer & Practice Question Creator)
 app.post("/api/ai/reading-assistance", async (req, res) => {
-  const { text, numQuestions = 3 } = req.body;
+  try {
+    const text = validateString(req.body.text, "text", 1, 10000);
+    const numQuestions = req.body.numQuestions !== undefined
+      ? validateInteger(req.body.numQuestions, "numQuestions", 1, 10)
+      : 3;
 
-  if (!text || !text.trim()) {
-    return res.status(400).json({ error: "Text content is required for reading assistance." });
-  }
-
-  if (!ai) {
-    return res.status(200).json({
-      error: "Gemini API key is not configured, but our offline sandbox successfully simulated your guide analysis!",
-      offline: true,
-      summary: `### Core Summary of Provided Text
+    if (!ai) {
+      return res.status(200).json({
+        error: "Gemini API key is not configured, but our offline sandbox successfully simulated your guide analysis!",
+        offline: true,
+        summary: `### Core Summary of Provided Text
 This text detailing curriculum study requirements covers key elements of academic candidate benchmarks.
 
 *   **Key Concept**: Systematic revision builds operational competence.
@@ -200,40 +257,39 @@ This text detailing curriculum study requirements covers key elements of academi
 *   **Formula Focus**: Ensure all physical constants or chemical balance calculations are written out with units.
 
 *Examiner Study Tip*: Scoring full points requires addressing each point-marking scheme explicitly rather than summarizing generally.`,
-      questions: [
-        {
-          id: `q-ra-off-${Date.now()}-1`,
-          questionText: "Outline the key distinction between general summarization and the precise use of candidate command words when answering examination questions.",
-          marks: 2,
-          modelAnswer: "Precise command words target specific mark scheme points (e.g., 'Describe' vs. 'Explain' triggers a mechanical point grid), whereas general summarization misses key terminologies necessary for credit under examiner criteria.",
-          explanation: "In Cambridge papers, answering exactly matching the command terms ensures you don't lose credit for writing excessive general text that lacks specific keywords.",
-          markSchemePoints: [
-            "Identifies command words as target-specific criteria triggers (1 Mark)",
-            "Contrasts with general summarization missing key credit milestones (1 Mark)"
-          ]
-        },
-        {
-          id: `q-ra-off-${Date.now()}-2`,
-          questionText: "What are the core command words used in Cambridge examination grading?",
-          marks: 1,
-          options: [
-            "Summarize, Outline, Present",
-            "Describe, Explain, State, Calculate",
-            "Synthesize, Memorize, Rewrite",
-            "Discuss, Debate, Argue"
-          ],
-          correctOptionIndex: 1,
-          modelAnswer: "Describe, Explain, State, Calculate (Option B). These are the formal command verbs declared in syllabus guidelines.",
-          explanation: "Cambridge examinations use precise command words to signal the exact nature and depth of response expected from candidates.",
-          markSchemePoints: [
-            "Identifies correct set of CAIE command verbs (1 Mark)"
-          ]
-        }
-      ]
-    });
-  }
+        questions: [
+          {
+            id: `q-ra-off-${Date.now()}-1`,
+            questionText: "Outline the key distinction between general summarization and the precise use of candidate command words when answering examination questions.",
+            marks: 2,
+            modelAnswer: "Precise command words target specific mark scheme points (e.g., 'Describe' vs. 'Explain' triggers a mechanical point grid), whereas general summarization misses key terminologies necessary for credit under examiner criteria.",
+            explanation: "In Cambridge papers, answering exactly matching the command terms ensures you don't lose credit for writing excessive general text that lacks specific keywords.",
+            markSchemePoints: [
+              "Identifies command words as target-specific criteria triggers (1 Mark)",
+              "Contrasts with general summarization missing key credit milestones (1 Mark)"
+            ]
+          },
+          {
+            id: `q-ra-off-${Date.now()}-2`,
+            questionText: "What are the core command words used in Cambridge examination grading?",
+            marks: 1,
+            options: [
+              "Summarize, Outline, Present",
+              "Describe, Explain, State, Calculate",
+              "Synthesize, Memorize, Rewrite",
+              "Discuss, Debate, Argue"
+            ],
+            correctOptionIndex: 1,
+            modelAnswer: "Describe, Explain, State, Calculate (Option B). These are the formal command verbs declared in syllabus guidelines.",
+            explanation: "Cambridge examinations use precise command words to signal the exact nature and depth of response expected from candidates.",
+            markSchemePoints: [
+              "Identifies correct set of CAIE command verbs (1 Mark)"
+            ]
+          }
+        ]
+      });
+    }
 
-  try {
     const prompt = `You are a Senior Cambridge IGCSE Examiner and Academic Tutor.
 Analyze the following study text and generate high-value Reading Assistance:
 1. Provide a comprehensive, clean Markdown summary of the text highlighting core definitions, formulas, or biological/chemical/mathematical concepts with Examiner Tips.
@@ -300,39 +356,57 @@ ${text}
     res.json(result);
   } catch (error: any) {
     console.error("Reading assistance generation err:", error);
-    res.status(500).json({ error: "Failed to generate reading assistance: " + error.message });
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "An unexpected error occurred on the server." });
   }
 });
 
 // 3.5. API: IGCSE Approved Online Material Selector & Synthesis (Grades 1 to 11)
 app.post("/api/ai/online-igcse-material", async (req, res) => {
-  const { grade, subject, topicKeyword } = req.body;
-  
-  const gradeNum = parseInt(grade) || 7;
-  const subName = subject || "General Science";
-  const topic = topicKeyword || "Core Concepts";
+  try {
+    const { grade, subject, topicKeyword } = req.body;
 
-  // Determine stage group
-  let curriculumStage = "Cambridge Upper Secondary";
-  if (gradeNum <= 5) {
-    curriculumStage = "Cambridge International Primary";
-  } else if (gradeNum <= 8) {
-    curriculumStage = "Cambridge Lower Secondary";
-  }
+    let gradeNum = 7;
+    if (grade !== undefined && grade !== null) {
+      if (typeof grade === "number") {
+        gradeNum = validateInteger(grade, "grade", 1, 11);
+      } else if (typeof grade === "string") {
+        const parsed = parseInt(grade, 10);
+        if (isNaN(parsed) || parsed < 1 || parsed > 11) {
+          throw new ValidationError("Field 'grade' must be a valid number or numeric string between 1 and 11.");
+        }
+        gradeNum = parsed;
+      } else {
+        throw new ValidationError("Field 'grade' must be a number or numeric string.");
+      }
+    }
 
-  if (!ai) {
-    // Generate an incredibly detailed and responsive offline study material tailored to their exact selections
-    let title = `Syllabus Guide: ${subName} (${topic}) - Grade ${gradeNum}`;
-    let syllabusCode = `CAIE-${subName.substring(0,3).toUpperCase()}-G${gradeNum}`;
-    let difficulty = "Medium";
-    let resourceType = "Revision Guide";
-    let tags = [subName, `Grade ${gradeNum}`, "Revision", topic];
-    let content = "";
-    
+    const subName = subject !== undefined ? validateString(subject, "subject", 1, 100) : "General Science";
+    const topic = topicKeyword !== undefined ? validateString(topicKeyword, "topicKeyword", 1, 100) : "Core Concepts";
+
+    // Determine stage group
+    let curriculumStage = "Cambridge Upper Secondary";
     if (gradeNum <= 5) {
-      difficulty = "Easy";
-      resourceType = "Notes";
-      content = `# ${subName} - Grade ${gradeNum} Primary Lesson Notes
+      curriculumStage = "Cambridge International Primary";
+    } else if (gradeNum <= 8) {
+      curriculumStage = "Cambridge Lower Secondary";
+    }
+
+    if (!ai) {
+      // Generate an incredibly detailed and responsive offline study material tailored to their exact selections
+      let title = `Syllabus Guide: ${subName} (${topic}) - Grade ${gradeNum}`;
+      let syllabusCode = `CAIE-${subName.substring(0,3).toUpperCase()}-G${gradeNum}`;
+      let difficulty = "Medium";
+      let resourceType = "Revision Guide";
+      let tags = [subName, `Grade ${gradeNum}`, "Revision", topic];
+      let content = "";
+
+      if (gradeNum <= 5) {
+        difficulty = "Easy";
+        resourceType = "Notes";
+        content = `# ${subName} - Grade ${gradeNum} Primary Lesson Notes
 ## Focus Area: ${topic}
 
 Welcome to your Cambridge Primary aligned preparation board! At this level (Grade ${gradeNum}), we focus on discovering foundational phenomena.
@@ -348,10 +422,10 @@ Welcome to your Cambridge Primary aligned preparation board! At this level (Grad
 ---
 ### 💡 Cambridge Primary Examiner Tip
 Always use neat, colorful line drawings to label parts (like flowers, shapes, or basic chemical glassware). Be clear about writing down correct standard units!`;
-    } else if (gradeNum <= 8) {
-      difficulty = "Medium";
-      resourceType = "Revision Guide";
-      content = `# Grade ${gradeNum} ${subName} - Syllabus Analysis
+      } else if (gradeNum <= 8) {
+        difficulty = "Medium";
+        resourceType = "Revision Guide";
+        content = `# Grade ${gradeNum} ${subName} - Syllabus Analysis
 ## Topic Ref: ${topic}
 
 This comprehensive revision document is aligned with the **Cambridge Lower Secondary (Grades 6-8)** standards for Grade ${gradeNum}.
@@ -370,11 +444,11 @@ At Lower Secondary stage, ${topic} is evaluated on qualitative descriptions and 
 ---
 ### 📝 Lower Secondary Study Secret
 Never use vague terms like 'feel the heat' or 'the speed increases fast'. Instead, write command-aligned phrases like: "thermodynamic convection occurs" or "acceleration of ${subName} increases proportionally."`;
-    } else {
-      difficulty = "Exam Standard";
-      resourceType = "Revision Guide";
-      syllabusCode = subName.toLowerCase().includes("math") ? "0580/Extended" : subName.toLowerCase().includes("bio") ? "0610/Paper4" : subName.toLowerCase().includes("chem") ? "0620/Paper4" : "0983/Syllabus";
-      content = `# Cambridge IGCSE ${subName} (Grade ${gradeNum}) Extended Revision Guide
+      } else {
+        difficulty = "Exam Standard";
+        resourceType = "Revision Guide";
+        syllabusCode = subName.toLowerCase().includes("math") ? "0580/Extended" : subName.toLowerCase().includes("bio") ? "0610/Paper4" : subName.toLowerCase().includes("chem") ? "0620/Paper4" : "0983/Syllabus";
+        content = `# Cambridge IGCSE ${subName} (Grade ${gradeNum}) Extended Revision Guide
 ## Module: ${topic} • Syllabus Ref: ${syllabusCode}
 
 This study guide has been synthesized to align with the core **Cambridge IGCSE GCE O-Level (Grades 9-11)** examiner descriptors.
@@ -393,25 +467,24 @@ When asked for experimental improvements on ${topic}, prioritize these high-yiel
 ---
 ### 🎓 IGCSE Exam Masterclass Tip
 The mark scheme is heavily structured. When an item has 3 marks allocated, write exactly 3 distinct bullet points emphasizing official CAIE keywords.`;
+      }
+
+      return res.status(200).json({
+        title,
+        subjectId: "bio", // fallback link to bio, can be modified in UI if needed
+        topicId: `online-item-${Date.now()}`,
+        subtopic: topic,
+        syllabusCode,
+        difficulty,
+        resourceType,
+        content,
+        author: "Cambridge Approved Online Synergy, offline mock-up fallback",
+        year: "2026",
+        tags,
+        warning: "Tutor running in offline demonstration mode. To sync with real-time AI servers, add a GEMINI_API_KEY to your Settings > Secrets panel."
+      });
     }
 
-    return res.status(200).json({
-      title,
-      subjectId: "bio", // fallback link to bio, can be modified in UI if needed
-      topicId: `online-item-${Date.now()}`,
-      subtopic: topic,
-      syllabusCode,
-      difficulty,
-      resourceType,
-      content,
-      author: "Cambridge Approved Online Synergy, offline mock-up fallback",
-      year: "2026",
-      tags,
-      warning: "Tutor running in offline demonstration mode. To sync with real-time AI servers, add a GEMINI_API_KEY to your Settings > Secrets panel."
-    });
-  }
-
-  try {
     const prompt = `Generate a highly professional, pristine academic study material lesson resource approved for:
 Education Grade Level: Grade ${gradeNum} (${curriculumStage})
 School Subject: ${subName}
@@ -481,7 +554,10 @@ The lesson must:
     res.json(finalResource);
   } catch (error: any) {
     console.error("Online resource synthesis error:", error);
-    res.status(500).json({ error: "Failed to synthesize approved online study material: " + error.message });
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "An unexpected error occurred on the server." });
   }
 });
 
@@ -508,4 +584,8 @@ async function bootstrap() {
   });
 }
 
-bootstrap();
+if (process.env.NODE_ENV !== "test") {
+  bootstrap();
+}
+
+export { app };
